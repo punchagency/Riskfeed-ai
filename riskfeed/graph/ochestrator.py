@@ -10,6 +10,8 @@ from riskfeed.graph.nodes import (
     response_composer_node,
 )
 
+from riskfeed.graph.nodes import retrieval_node
+
 
 def build_graph():
     """
@@ -22,12 +24,16 @@ def build_graph():
     g.add_node("planner", planner_node)
     g.add_node("tool_executor", tool_executor_node)
     g.add_node("response_composer", response_composer_node)
+    g.add_node("retrieval", retrieval_node)
 
     g.set_entry_point("intent_router")
     g.add_edge("intent_router", "planner")
     g.add_edge("planner", "tool_executor")
-    g.add_edge("tool_executor", "response_composer")
+    g.add_edge("tool_executor", "retrieval")
+    g.add_edge("retrieval", "response_composer")
     g.add_edge("response_composer", END)
+
+    
 
     return g.compile()
 

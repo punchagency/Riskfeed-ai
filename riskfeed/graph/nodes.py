@@ -10,6 +10,8 @@ from riskfeed.auth.rbac import is_tool_allowed
 from riskfeed.auth.sensitive import requires_confirmation
 from riskfeed.auth.confirmations import create_pending_action, consume
 
+from riskfeed.retrieval.tfidf import RETRIEVER
+
 
 # Intent router node
 def intent_router_node(state: GraphState) -> GraphState:
@@ -199,7 +201,7 @@ def response_composer_node(state: GraphState) -> GraphState:
 
     checklist: List[Dict[str, Any]] = []
     actions: List[Dict[str, Any]] = []
-    citations: List[Dict[str, Any]] = []
+    citations: List[Dict[str, Any]] = state.get("retrieval_citations", [])
 
     if intent in {"project_intake", "match_contractors", "risk_check", "milestones", "invite_contractor"}:
         checklist = [
@@ -219,7 +221,7 @@ def response_composer_node(state: GraphState) -> GraphState:
         state["out_debug"] = {
             "intent": intent,
             "tool_calls": state.get("planned_tool_calls", []),
-            "retrieval": {"hits": 0},
+            "retrieval": state.get("retrieval_meta", {"hits": 0}),
         } if state.get("debug_enabled") else {}
         return state
 
@@ -229,14 +231,14 @@ def response_composer_node(state: GraphState) -> GraphState:
     # Handle RBAC/tool errors
     for r in tool_results:
         if r.get("ok") is False:
-            lines.append(f"❌ {r.get('tool_name')}: {r.get('error')}")
+            lines.append(f"{r.get('tool_name')}: {r.get('error')}")
 
     # Handle pending confirmations (proposed actions)
     for r in tool_results:
         if r.get("pending_confirmation"):
             cid = r["confirm_action_id"]
             tname = r["tool_name"]
-            lines.append(f"⚠️ Action requires confirmation: {tname}")
+            lines.append(f"Action requires confirmation: {tname}")
             lines.append("Reply with confirm_action_id to proceed.")
             actions.append(
                 {
@@ -259,7 +261,7 @@ def response_composer_node(state: GraphState) -> GraphState:
         state["out_debug"] = {
             "intent": intent,
             "tool_calls": state.get("planned_tool_calls", []),
-            "retrieval": {"hits": 0},
+            "retrieval": state.get("retrieval_meta", {"hits": 0}),
         } if state.get("debug_enabled") else {}
         return state
 
@@ -272,16 +274,26 @@ def response_composer_node(state: GraphState) -> GraphState:
         if r.get("ok") and r.get("tool_name") == "contractor.list_contractors":
             contractors = r["data"]["contractors"]
         if r.get("ok") and r.get("tool_name") == "bidding.send_invite":
-            lines.append("✅ Invite sent successfully (mock).")
+            lines.append("Invite sent successfully (mock).")
 
     if created_project_id:
-        lines.append(f"✅ Project draft created: {created_project_id}")
+        lines.append(f"Project draft created: {created_project_id}")
 
     if contractors:
         lines.append("Here are available contractors (mock data for now):")
         for c in contractors[:3]:
             lines.append(f"- {c['name']} — trades: {', '.join(c['trades'])}")
 
+    # If there are citations and no lines, add them to the output
+    if citations and not lines:
+        titles = [c["title"] for c in citations]
+        lines.append("Here's what matters based on our RiskFeed knowledge base:")
+        # Turn the snippets into short bullets 
+        for c in citations[:2]:
+            lines.append(f"- {c['title']}: {c['snippet']}")
+        lines.append("If you tell me your project type and city/state, I can tailor the guidance and risk checklist.")
+
+    # If no lines, default message
     if not lines:
         lines.append(
             "Hi — I’m the RiskFeed assistant.\n"
@@ -296,7 +308,19 @@ def response_composer_node(state: GraphState) -> GraphState:
     state["out_debug"] = {
         "intent": intent,
         "tool_calls": state.get("planned_tool_calls", []),
-        "retrieval": {"hits": 0},
+        "retrieval": state.get("retrieval_meta", {"hits": 0}),
     } if state.get("debug_enabled") else {}
 
+    return state
+
+# Retrieval node uses TF-IDF to find relevant documents
+def retrieval_node(state: GraphState) -> GraphState:
+    """Retrieve local knowledge for grounding + citations"""
+
+    # Get the query from the state
+    query = state.get("message", "")
+    citations, meta = RETRIEVER.retrieve(query)
+
+    state["retrieval_citations"] = citations
+    state["retrieval_meta"] = meta
     return state

@@ -20,7 +20,9 @@ class GraphState(TypedDict, total=False):
     extracted: Dict[str, Any]
     missing_info: List[Dict[str, Any]]
     planned_tool_calls: List[Dict[str, Any]]   # [{tool_name: str, args: {...}}]
-    tool_results: List[Dict[str, Any]]         # tool outputs in order
+    tool_results: List[Dict[str, Any]] 
+    retrieval_citations: List[Dict[str, Any]]
+    retrieval_meta: Dict[str, Any]        # tool outputs in order
 
     # outputs
     out_message: str
@@ -29,3 +31,4 @@ class GraphState(TypedDict, total=False):
     out_actions: List[Dict[str, Any]]
     out_citations: List[Dict[str, Any]]
     out_debug: Dict[str, Any]
+    
