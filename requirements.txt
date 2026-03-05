@@ -6,4 +6,3 @@ httpx>=0.27.0
 
 
 langgraph>=0.4.0
-langgraph-core>=0.2.0
