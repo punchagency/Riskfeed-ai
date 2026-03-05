@@ -27,3 +27,23 @@ def test_chat_shape():
     assert isinstance(data["citations"], list)
     assert isinstance(data["debug"], dict)
     
+def test_chat_match_contractors_uses_tools_and_returns_contractors():
+    res = client.post(
+        "/chat",
+        json={
+            "role": "homeowner",
+            "message": "Find contractor for kitchen remodel in Austin budget 25000",
+            "session_id": "s_tools",
+            "confirm_action_id": None,
+            "debug": True,
+        },
+    )
+    assert res.status_code == 200
+    data = res.json()
+
+    # should include contractor names in the message
+    assert "Lone Star Kitchens" in data["message"]
+
+    # debug should show tool calls since debug=True
+    assert "tool_calls" in data["debug"]
+    assert len(data["debug"]["tool_calls"]) >= 1

@@ -6,10 +6,6 @@ Role = Literal["homeowner", "contractor"]
 
 
 class GraphState(TypedDict, total=False):
-    """
-    This is the single object that flows through LangGraph.
-    """
-
     # request inputs
     role: Role
     message: str
@@ -20,7 +16,13 @@ class GraphState(TypedDict, total=False):
     # internal routing
     intent: str
 
-    # outputs (we will map these into ChatResponse)
+    # planning + execution
+    extracted: Dict[str, Any]
+    missing_info: List[Dict[str, Any]]
+    planned_tool_calls: List[Dict[str, Any]]   # [{tool_name: str, args: {...}}]
+    tool_results: List[Dict[str, Any]]         # tool outputs in order
+
+    # outputs
     out_message: str
     out_checklist: List[Dict[str, Any]]
     out_missing_info: List[Dict[str, Any]]

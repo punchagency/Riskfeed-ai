@@ -3,20 +3,30 @@ from __future__ import annotations
 from langgraph.graph import StateGraph, END
 
 from riskfeed.graph.state import GraphState
-from riskfeed.graph.nodes import intent_router_node, response_composer_node
+from riskfeed.graph.nodes import (
+    intent_router_node,
+    planner_node,
+    tool_executor_node,
+    response_composer_node,
+)
 
 
 def build_graph():
     """
-      intent_router -> response_composer -> END
+      intent_router -> planner -> tool_executor -> response_composer -> END
+      Build the graph with the nodes and edges
     """
     g = StateGraph(GraphState)
 
     g.add_node("intent_router", intent_router_node)
+    g.add_node("planner", planner_node)
+    g.add_node("tool_executor", tool_executor_node)
     g.add_node("response_composer", response_composer_node)
 
     g.set_entry_point("intent_router")
-    g.add_edge("intent_router", "response_composer")
+    g.add_edge("intent_router", "planner")
+    g.add_edge("planner", "tool_executor")
+    g.add_edge("tool_executor", "response_composer")
     g.add_edge("response_composer", END)
 
     return g.compile()
@@ -33,9 +43,6 @@ def run_chat(
     confirm_action_id: str | None,
     debug_enabled: bool,
 ) -> GraphState:
-    """
-    Convenience wrapper: prepares state and runs the graph.
-    """
     state: GraphState = {
         "role": role,
         "message": message,
