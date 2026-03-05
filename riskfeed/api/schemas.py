@@ -31,7 +31,7 @@ class MissingInfo(BaseModel):
 class Action(BaseModel):
     """A single action that the user can take"""
     id: str
-    type: Literal["tol_call_proposed"] = "tool_call_proposed"
+    type: Literal["tool_call_proposed"] = "tool_call_proposed"
     tool_name: str
     args: Dict[str, Any] = Field(default_factory=dict)
 

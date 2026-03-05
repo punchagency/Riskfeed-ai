@@ -8,7 +8,7 @@ RiskFeed = “risk intelligence” for U.S. residential construction projects. T
 
 ---
 
-## What we are building (IN SCOPE)
+## What we are building
 
 We are building a **single Python service** that exposes an API and runs a LangGraph-powered agent loop.
 
