@@ -35,7 +35,7 @@ class Action(BaseModel):
     tool_name: str
     args: Dict[str, Any] = Field(default_factory=dict)
 
-    # requires_confirmation: bool = False
+    requires_confirmation: bool = False
 
     confirm_action_id: Optional[str] = None
 

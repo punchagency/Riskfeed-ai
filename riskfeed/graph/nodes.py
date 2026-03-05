@@ -6,15 +6,23 @@ from typing import Any, Dict, List
 from riskfeed.graph.state import GraphState
 from riskfeed.tools.registry import get_tool
 
+from riskfeed.auth.rbac import is_tool_allowed
+from riskfeed.auth.sensitive import requires_confirmation
+from riskfeed.auth.confirmations import create_pending_action, consume
 
+
+# Intent router node
 def intent_router_node(state: GraphState) -> GraphState:
     msg = (state.get("message") or "").lower().strip()
 
+    # If confirm_action_id exists, we are in confirm flow
     if state.get("confirm_action_id"):
-        state["intent"] = "confirm_attempt"
+        state["intent"] = "confirm"
         return state
 
-    if any(k in msg for k in ["find contractor", "recommend contractor", "shortlist", "hire contractor"]):
+    if any(k in msg for k in ["invite", "send invite"]):
+        state["intent"] = "invite_contractor"
+    elif any(k in msg for k in ["find contractor", "recommend contractor", "shortlist", "hire contractor"]):
         state["intent"] = "match_contractors"
     elif any(k in msg for k in ["risk", "alert", "overrun", "delay"]):
         state["intent"] = "risk_check"
@@ -27,21 +35,15 @@ def intent_router_node(state: GraphState) -> GraphState:
 
     return state
 
-
+# Extract location from message
 def _extract_location(message: str) -> str | None:
     m = re.search(r"\bin\s+([a-zA-Z\s]{2,30})", message)
     if not m:
         return None
     return m.group(1).strip()
 
-
+# Extract budget from message
 def _extract_budget(message: str) -> int | None:
-    """
-    Extract basic budget numbers like:
-    - $25000
-    - 25000 USD
-    - budget 25000
-    """
     m = re.search(r"(\$?\s?\d{4,6})", message)
     if not m:
         return None
@@ -51,27 +53,32 @@ def _extract_budget(message: str) -> int | None:
     except Exception:
         return None
 
+# Extract contractor id from message
+def _extract_contractor_id(message: str) -> str | None:
+    m = re.search(r"\b(c\d+)\b", message.lower())
+    return m.group(1) if m else None
 
+# Planner node decides missing_info + planned_tool_calls
 def planner_node(state: GraphState) -> GraphState:
-    """
-    Planner decides:
-    1) What info is missing (so we can ask the user)
-    2) What tools to call (if we have enough info)
-    """
-    msg = (state.get("message") or "").strip()
     intent = state.get("intent", "general")
+    msg = (state.get("message") or "").strip()
     session_id = state.get("session_id") or "anon_session"
 
     extracted: Dict[str, Any] = {}
     missing_info: List[Dict[str, Any]] = []
     planned_tool_calls: List[Dict[str, Any]] = []
 
-    # For these intents we want project context
+    if intent == "confirm":
+        state["extracted"] = {}
+        state["missing_info"] = []
+        state["planned_tool_calls"] = []
+        state["tool_results"] = []
+        return state
+
+    # Project related
     if intent in {"project_intake", "match_contractors"}:
         location = _extract_location(msg) or ""
         budget = _extract_budget(msg)
-
-        # very simple project type guess
         project_type = "kitchen remodel" if "kitchen" in msg.lower() else "remodel"
 
         extracted["project_type"] = project_type
@@ -84,23 +91,35 @@ def planner_node(state: GraphState) -> GraphState:
         if budget is None:
             missing_info.append({"field": "budget_usd", "question": "What is your target budget range (USD)?"})
 
-        # If no missing info, we can create a project draft (tool-first)
         if not missing_info:
             planned_tool_calls.append(
                 {
                     "tool_name": "project.create_project_draft",
-                    "args": {
-                        "project_type": project_type,
-                        "location": location,
-                        "owner_key": session_id,  # placeholder owner until we add user_id
-                    },
+                    "args": {"project_type": project_type, "location": location, "owner_key": session_id},
                 }
             )
 
-        # If they asked specifically to find contractors and we have enough info, we also list contractors
         if intent == "match_contractors" and not missing_info:
+            planned_tool_calls.append({"tool_name": "contractor.list_contractors", "args": {}})
+
+    # Invite flow (requires a project_id and contractor_id)
+    if intent == "invite_contractor":
+        contractor_id = _extract_contractor_id(msg)
+        # naive project id extraction: look for proj_... in the message
+        m = re.search(r"\b(proj_[a-f0-9]+)\b", msg.lower())
+        project_id = m.group(1) if m else None
+
+        if not contractor_id:
+            missing_info.append({"field": "contractor_id", "question": "Which contractor? (use id like c1 for now)"})
+        if not project_id:
+            missing_info.append({"field": "project_id", "question": "Which project draft id? (looks like proj_...)"})
+
+        if not missing_info:
             planned_tool_calls.append(
-                {"tool_name": "contractor.list_contractors", "args": {}}
+                {
+                    "tool_name": "bidding.send_invite",
+                    "args": {"contractor_id": contractor_id, "project_id": project_id, "note": ""},
+                }
             )
 
     state["extracted"] = extracted
@@ -110,65 +129,88 @@ def planner_node(state: GraphState) -> GraphState:
     return state
 
 
+# Tool executor node enforces RBAC + confirmation gates
 def tool_executor_node(state: GraphState) -> GraphState:
-    """
-    Execute planned tools and store results
-    """
+    role = state.get("role")
+    session_id = state.get("session_id") or "anon_session"
+    confirm_id = state.get("confirm_action_id")
+
     results: List[Dict[str, Any]] = []
 
+    # Confirm flow: execute only the confirmed pending action
+    if confirm_id:
+        ok, err, action = consume(confirm_id, role=role, session_id=session_id)
+        if not ok:
+            state["tool_results"] = [{"ok": False, "tool_name": "confirm", "error": err}]
+            return state
+
+        # RBAC check again before execution (extra safety)
+        if not is_tool_allowed(role, action.tool_name):
+            state["tool_results"] = [{"ok": False, "tool_name": action.tool_name, "error": "RBAC denied"}]
+            return state
+
+        tool_fn = get_tool(action.tool_name)
+        out = tool_fn(action.args)
+        results.append(out)
+        state["tool_results"] = results
+        return state
+
+    # Normal execution flow
     for call in state.get("planned_tool_calls", []):
         tool_name = call["tool_name"]
         args = call.get("args", {})
 
-        tool_fn = get_tool(tool_name)
-        tool_out = tool_fn(args)
+        # RBAC
+        if not is_tool_allowed(role, tool_name):
+            results.append({"ok": False, "tool_name": tool_name, "error": "RBAC denied"})
+            continue
 
-        results.append(tool_out)
+        # Confirmation gate for sensitive tools
+        if requires_confirmation(tool_name):
+            confirm_action_id = create_pending_action(
+                tool_name=tool_name,
+                args=args,
+                role=role,
+                session_id=session_id,
+            )
+            results.append(
+                {
+                    "ok": True,
+                    "tool_name": tool_name,
+                    "pending_confirmation": True,
+                    "confirm_action_id": confirm_action_id,
+                    "args": args,
+                }
+            )
+            continue
+
+        tool_fn = get_tool(tool_name)
+        out = tool_fn(args)
+        results.append(out)
 
     state["tool_results"] = results
     return state
 
 
+# Response composer node composes the stable API response e.g. RBAC errors, pending confirmations actions
 def response_composer_node(state: GraphState) -> GraphState:
-    """
-    Build the stable response shape, but now grounded in tool results.
-
-    This is where the chatbot turns raw tool outputs into helpful text.
-    """
     intent = state.get("intent", "general")
-    msg = (state.get("message") or "").lower().strip()
+    missing_info = state.get("missing_info", [])
 
     checklist: List[Dict[str, Any]] = []
-    citations: List[Dict[str, Any]] = []
     actions: List[Dict[str, Any]] = []
+    citations: List[Dict[str, Any]] = []
 
-    # Confirmation still not implemented
-    if intent == "confirm_attempt":
-        state["out_message"] = (
-            "Confirmation handling isn't implemented yet "
-            "For now, continue without confirm_action_id."
-        )
-        state["out_checklist"] = []
-        state["out_missing_info"] = []
-        state["out_actions"] = []
-        state["out_citations"] = []
-        state["out_debug"] = {"intent": intent} if state.get("debug_enabled") else {}
-        return state
-
-    # Basic checklist (same as before)
-    if intent in {"project_intake", "match_contractors", "risk_check", "milestones"}:
+    if intent in {"project_intake", "match_contractors", "risk_check", "milestones", "invite_contractor"}:
         checklist = [
             {"id": "define_scope", "label": "Define the project scope", "done": False},
             {"id": "set_budget", "label": "Set a realistic budget", "done": False},
             {"id": "choose_contractors", "label": "Shortlist contractors", "done": False},
         ]
 
-    # If missing info, ask the user instead of calling tools (tool-first, safe)
-    missing_info = state.get("missing_info", [])
     if missing_info:
         state["out_message"] = (
-            "I can help you with that using a guided, risk-first workflow.\n"
-            "Before I proceed, I need these details:"
+            "Before I proceed safely, I need these details:"
         )
         state["out_checklist"] = checklist
         state["out_missing_info"] = missing_info
@@ -176,27 +218,64 @@ def response_composer_node(state: GraphState) -> GraphState:
         state["out_citations"] = citations
         state["out_debug"] = {
             "intent": intent,
-            "tool_calls": [],
+            "tool_calls": state.get("planned_tool_calls", []),
             "retrieval": {"hits": 0},
         } if state.get("debug_enabled") else {}
         return state
 
-    # Use tool results (grounded output)
     tool_results = state.get("tool_results", [])
+    lines: List[str] = []
+
+    # Handle RBAC/tool errors
+    for r in tool_results:
+        if r.get("ok") is False:
+            lines.append(f"❌ {r.get('tool_name')}: {r.get('error')}")
+
+    # Handle pending confirmations (proposed actions)
+    for r in tool_results:
+        if r.get("pending_confirmation"):
+            cid = r["confirm_action_id"]
+            tname = r["tool_name"]
+            lines.append(f"⚠️ Action requires confirmation: {tname}")
+            lines.append("Reply with confirm_action_id to proceed.")
+            actions.append(
+                {
+                    "id": cid,
+                    "type": "tool_call_proposed",
+                    "tool_name": tname,
+                    "args": r.get("args", {}),
+                    "requires_confirmation": True,
+                    "confirm_action_id": cid,
+                }
+            )
+
+    # If there are pending confirmations, we stop here (don’t mix with other outputs)
+    if actions:
+        state["out_message"] = "\n".join(lines)
+        state["out_checklist"] = checklist
+        state["out_missing_info"] = []
+        state["out_actions"] = actions
+        state["out_citations"] = citations
+        state["out_debug"] = {
+            "intent": intent,
+            "tool_calls": state.get("planned_tool_calls", []),
+            "retrieval": {"hits": 0},
+        } if state.get("debug_enabled") else {}
+        return state
+
     created_project_id = None
     contractors = []
 
     for r in tool_results:
         if r.get("ok") and r.get("tool_name") == "project.create_project_draft":
             created_project_id = r["data"]["project_id"]
-
         if r.get("ok") and r.get("tool_name") == "contractor.list_contractors":
             contractors = r["data"]["contractors"]
+        if r.get("ok") and r.get("tool_name") == "bidding.send_invite":
+            lines.append("✅ Invite sent successfully (mock).")
 
-    # Compose message
-    lines: List[str] = []
     if created_project_id:
-        lines.append(f"Project draft created: {created_project_id}")
+        lines.append(f"✅ Project draft created: {created_project_id}")
 
     if contractors:
         lines.append("Here are available contractors (mock data for now):")
@@ -212,7 +291,7 @@ def response_composer_node(state: GraphState) -> GraphState:
     state["out_message"] = "\n".join(lines)
     state["out_checklist"] = checklist
     state["out_missing_info"] = []
-    state["out_actions"] = actions
+    state["out_actions"] = []
     state["out_citations"] = citations
     state["out_debug"] = {
         "intent": intent,
