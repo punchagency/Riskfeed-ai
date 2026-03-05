@@ -27,4 +27,4 @@ Thumbs.db
 # Cursor / tooling
 .cursor/cache/
 .cursor/tmp/
-
+.cursor/
