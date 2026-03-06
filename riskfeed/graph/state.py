@@ -31,4 +31,6 @@ class GraphState(TypedDict, total=False):
     out_actions: List[Dict[str, Any]]
     out_citations: List[Dict[str, Any]]
     out_debug: Dict[str, Any]
+    verification_errors: List[str]
+    verification_ok: bool
     

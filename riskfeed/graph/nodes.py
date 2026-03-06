@@ -28,6 +28,10 @@ def intent_router_node(state: GraphState) -> GraphState:
         state["intent"] = "match_contractors"
     elif any(k in msg for k in ["risk", "alert", "overrun", "delay"]):
         state["intent"] = "risk_check"
+    # Permits/inspections are informational; answer directly using retrieval
+    # rather than forcing project-intake fields like budget/location.
+    elif ("permit" in msg) or ("inspection" in msg):
+        state["intent"] = "general"
     elif any(k in msg for k in ["milestone", "definition of done", "dod"]):
         state["intent"] = "milestones"
     elif any(k in msg for k in ["remodel", "renov", "kitchen", "bath"]):
@@ -323,4 +327,68 @@ def retrieval_node(state: GraphState) -> GraphState:
 
     state["retrieval_citations"] = citations
     state["retrieval_meta"] = meta
+    
+    return state
+
+# Verifier node checks if the response is safe and consistent
+def verifier_node(state: GraphState) -> GraphState:
+    """Checks if the response is safe + consistent"""
+    errors: List[str] = []
+
+    # Rule 0: input message must exist (otherwise trigger repair fallback)
+    in_message = state.get("message", "")
+    if not in_message or not in_message.strip():
+        errors.append("input message is empty")
+
+    # Rule 1: message must exist
+    out_message = state.get("out_message", "")
+    if not out_message or not out_message.strip():
+        errors.append("out_message is empty")
+
+    # Rule 2: if actions require confirmation, confirm_action_id must exist
+    for action in state.get("out_actions", []):
+        if action.get("requires_confirmation") and not action.get("confirm_action_id"):
+            errors.append("action requires confirmation but confirm_action_id missing")
+
+    # Rule 3: if we executed a sensitive tool, it must have come from confirmation path
+    # In Phase 3, sensitive tools should only execute when confirm_action_id was provided.
+    confirm_used = bool(state.get("confirm_action_id"))
+    for r in state.get("tool_results", []):
+        tname = r.get("tool_name", "")
+        # Pending-confirmation results are not executions; they are proposals.
+        if tname == "bidding.send_invite" and r.get("ok") and not confirm_used and not r.get("pending_confirmation"):
+            errors.append("sensitive tool executed without confirmation")
+
+    # Rule 4: if we say "based on knowledge base", citations should exist
+    if "knowledge base" in out_message.lower():
+        if not state.get("out_citations"):
+            errors.append("message references knowledge base but citations are empty")
+
+    state["verification_errors"] = errors
+    state["verification_ok"] = len(errors) == 0
+    return state
+
+#  Repair node repairs the output into a safe and consistent fallback
+def repair_node(state: GraphState) -> GraphState:
+    """Repairs the output into a safe and consistent fallback"""
+    errors = state.get("verification_errors", [])
+
+    # Basic safe fallback message
+    safe_lines = [
+        "I hit a consistency check and paused to keep things safe.",
+        "Here’s what I can do next:",
+        "- Ask you for missing info",
+        "- Propose actions (with confirmations where required)",
+        "- Provide guidance grounded in the knowledge base (with citations)",
+    ]
+    safe_lines.append("")
+    safe_lines.append("Detected issues:")
+    for e in errors:
+        safe_lines.append(f"- {e}")
+
+    # Clear unsafe actions; keep citations if present
+    state["out_message"] = "\n".join(safe_lines)
+    state["out_actions"] = []  # safest repair
+    state["out_missing_info"] = state.get("out_missing_info", [])
+    state["verification_ok"] = True  # repaired response is now safe
     return state

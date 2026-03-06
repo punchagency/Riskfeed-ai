@@ -7,33 +7,45 @@ from riskfeed.graph.nodes import (
     intent_router_node,
     planner_node,
     tool_executor_node,
+    retrieval_node,
     response_composer_node,
+    verifier_node,
+    repair_node,
 )
-
-from riskfeed.graph.nodes import retrieval_node
 
 
 def build_graph():
-    """
-      intent_router -> planner -> tool_executor -> response_composer -> END
-      Build the graph with the nodes and edges
-    """
     g = StateGraph(GraphState)
 
     g.add_node("intent_router", intent_router_node)
     g.add_node("planner", planner_node)
     g.add_node("tool_executor", tool_executor_node)
-    g.add_node("response_composer", response_composer_node)
     g.add_node("retrieval", retrieval_node)
+    g.add_node("response_composer", response_composer_node)
+    g.add_node("verifier", verifier_node)
+    g.add_node("repair", repair_node)
 
     g.set_entry_point("intent_router")
     g.add_edge("intent_router", "planner")
     g.add_edge("planner", "tool_executor")
     g.add_edge("tool_executor", "retrieval")
     g.add_edge("retrieval", "response_composer")
-    g.add_edge("response_composer", END)
+    g.add_edge("response_composer", "verifier")
 
-    
+    # Conditional routing: if verification_ok then END else repair
+    def route_after_verify(state: GraphState) -> str:
+        return "end" if state.get("verification_ok") else "repair"
+
+    g.add_conditional_edges(
+        "verifier",
+        route_after_verify,
+        {
+            "end": END,
+            "repair": "repair",
+        },
+    )
+
+    g.add_edge("repair", END)
 
     return g.compile()
 
