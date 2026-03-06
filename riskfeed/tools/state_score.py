@@ -63,6 +63,21 @@ class InMemoryStore:
         }
         return project_id
 
+    def get_project(self, project_id: str) -> Dict[str, Any] | None:
+        return self.projects.get(project_id)
+
+    def create_project_draft(self, *, project_type: str, location: str, owner_key: str, budget_usd: int | None = None) -> str:
+        project_id = new_id("proj_")
+        self.projects[project_id] = {
+            "id": project_id,
+            "owner_key": owner_key,
+            "project_type": project_type,
+            "location": location,
+            "budget_usd": budget_usd,
+            "status": "draft",
+        }
+        return project_id
+
 
 # Singleton store instance used by all tools (good enough for Phase 2)
 STORE = InMemoryStore()

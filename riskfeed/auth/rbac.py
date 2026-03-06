@@ -12,6 +12,7 @@ ALLOWED_TOOLS: dict[Role, Set[str]] = {
         "contractor.list_contractors",
         "bidding.send_invite",
         "debug.crash_tool",
+        "risk.compute_project_risk",
     },
     "contractor": {
         # Contractors should NOT create homeowner projects.

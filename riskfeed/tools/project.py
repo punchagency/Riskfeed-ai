@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field
 
 from riskfeed.tools.state_score import STORE
@@ -10,6 +10,7 @@ class CreateProjectDraftArgs(BaseModel):
     project_type: str = Field(..., description="e.g., kitchen remodel")
     location: str = Field(..., description="e.g., Austin, TX")
     owner_key: str = Field(..., description="temporary owner identifier (session_id for now)")
+    budget_usd: Optional[int] = Field(default=None, description="optional budget in USD")
 
 
 class CreateProjectDraftResult(BaseModel):

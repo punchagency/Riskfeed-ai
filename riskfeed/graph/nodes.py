@@ -100,7 +100,7 @@ def planner_node(state: GraphState) -> GraphState:
         state["missing_info"] = []
         state["planned_tool_calls"] = []
         state["tool_results"] = []
-        return state
+        return state   
 
     # Project related
     if intent in {"project_intake", "match_contractors"}:
@@ -135,6 +135,25 @@ def planner_node(state: GraphState) -> GraphState:
         if intent == "match_contractors" and not missing_info:
             planned_tool_calls.append({"tool_name": "contractor.list_contractors", "args": {}})
 
+    # Risk check flow
+    if intent == "risk_check":
+        m = re.search(r"\b(proj_[a-f0-9]+)\b", msg.lower())
+        project_id = m.group(1) if m else state.get("current_project_id")
+
+        if not project_id:
+            missing_info.append(
+                {
+                    "field": "project_id",
+                    "question": "Which project draft id? (looks like proj_...)",
+                }
+            )
+        else:
+            planned_tool_calls.append(
+                {
+                    "tool_name": "risk.compute_project_risk",
+                    "args": {"project_id": project_id, "owner_key": session_id},
+                }
+            )
     # Invite flow (requires a project_id and contractor_id)
     if intent == "invite_contractor":
         contractor_id = _extract_contractor_id(msg)
@@ -364,6 +383,7 @@ def response_composer_node(state: GraphState) -> GraphState:
 
     created_project_id = None
     contractors = []
+    risk_report = None
 
     for r in tool_results:
         if r.get("ok") and r.get("tool_name") == "project.create_project_draft":
@@ -372,11 +392,30 @@ def response_composer_node(state: GraphState) -> GraphState:
             contractors = r["data"]["contractors"]
         if r.get("ok") and r.get("tool_name") == "bidding.send_invite":
             lines.append("Invite sent successfully (mock).")
+        if r.get("ok") and r.get("tool_name") == "risk.compute_project_risk":
+            risk_report = r["data"]
 
     existing_project_id = state.get("current_project_id")
     if existing_project_id and not created_project_id:
         lines.append(f"Project draft already exists: {existing_project_id}")
-    
+
+    if risk_report:
+        lines.append(f"Risk Score (0-100): {risk_report['risk_score_0_100']}")
+        lines.append(f"Confidence: {risk_report['confidence']}")
+        lines.append("")
+        lines.append("Risk drivers:")
+        for driver in risk_report.get("drivers", []):
+            lines.append(f"- {driver['category']}: {driver['severity']} ({driver['evidence']})")
+        lines.append("")
+        lines.append("Recommended mitigations:")
+        for mitigation in risk_report.get("mitigations", []):
+            lines.append(f" - {mitigation}")
+        if risk_report["missing_data"]:
+            lines.append("")
+            lines.append("Missing data (to improve accuracy):")
+            for x in risk_report["missing_data"]:
+                lines.append(f" - {x}")
+
     if created_project_id:
         lines.append(f"Project draft created: {created_project_id}")
 
