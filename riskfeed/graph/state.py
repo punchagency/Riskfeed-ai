@@ -12,6 +12,7 @@ class GraphState(TypedDict, total=False):
     session_id: Optional[str]
     confirm_action_id: Optional[str]
     debug_enabled: bool
+    trace_id: str
 
     # session memory
     session_memory: Dict[str, Any]

@@ -4,6 +4,9 @@ from fastapi import APIRouter
 from riskfeed.api.schemas import ChatRequest, ChatResponse
 from riskfeed.graph.ochestrator import run_chat
 
+from riskfeed.utils.trace import new_trace_id
+trace_id = new_trace_id()
+
 router = APIRouter()
 
 

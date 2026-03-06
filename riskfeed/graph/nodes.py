@@ -14,6 +14,8 @@ from riskfeed.retrieval.tfidf import RETRIEVER
 
 from riskfeed.graph.session import get_session, make_idempotency_key, get_cached_result, set_cached_result
 
+from riskfeed.utils.logging import log_event
+
 # Session load node loads session memory into graph state before we do intent routing/planning.
 def session_load_node(state: GraphState) -> GraphState:
     """
@@ -89,6 +91,9 @@ def planner_node(state: GraphState) -> GraphState:
     extracted: Dict[str, Any] = {}
     missing_info: List[Dict[str, Any]] = []
     planned_tool_calls: List[Dict[str, Any]] = []
+
+    if "crash tool" in msg.lower():
+        planned_tool_calls.append({"tool_name": "debug.crash_tool", "args": {}})
 
     if intent == "confirm":
         state["extracted"] = {}
@@ -180,7 +185,14 @@ def tool_executor_node(state: GraphState) -> GraphState:
             return state
 
         tool_fn = get_tool(action.tool_name)
-        out = tool_fn(action.args)
+        try:
+            out = tool_fn(action.args)
+        except Exception as e:
+            out = {
+                "ok": False,
+                "tool_name": action.tool_name,
+                "error": f"Tool raised exception: {type(e).__name__}",
+            }
         results.append(out)
         state["tool_results"] = results
         return state
@@ -227,13 +239,29 @@ def tool_executor_node(state: GraphState) -> GraphState:
 
 
         tool_fn = get_tool(tool_name)
-        out = tool_fn(args)
+        try:
+            out = tool_fn(args)
+        except Exception as e:
+            out = {
+                "ok": False,
+                "tool_name": tool_name,
+                "error": f"Tool raised exception: {type(e).__name__}",
+            }
 
         # cache the result
         if idem_key and out.get("ok"):
             set_cached_result(session, idem_key, out)
 
         results.append(out)
+    log_event(
+        "tools.executed",
+        {
+            "trace_id": state.get("trace_id"),
+            "session_id": session_id,
+            "role": role,
+            "results": [{"tool": r.get("tool_name"), "ok": r.get("ok")} for r in results],
+        },
+    )
     state["tool_results"] = results
     return state
 
@@ -289,6 +317,7 @@ def response_composer_node(state: GraphState) -> GraphState:
             "intent": intent,
             "tool_calls": state.get("planned_tool_calls", []),
             "retrieval": state.get("retrieval_meta", {"hits": 0}),
+            "trace_id": state.get("trace_id"),
         } if state.get("debug_enabled") else {}
         return state
 
@@ -329,6 +358,7 @@ def response_composer_node(state: GraphState) -> GraphState:
             "intent": intent,
             "tool_calls": state.get("planned_tool_calls", []),
             "retrieval": state.get("retrieval_meta", {"hits": 0}),
+            "trace_id": state.get("trace_id"),
         } if state.get("debug_enabled") else {}
         return state
 
@@ -376,12 +406,15 @@ def response_composer_node(state: GraphState) -> GraphState:
     state["out_missing_info"] = []
     state["out_actions"] = []
     state["out_citations"] = citations
-    state["out_debug"] = {
-        "intent": intent,
-        "tool_calls": state.get("planned_tool_calls", []),
-        "retrieval": state.get("retrieval_meta", {"hits": 0}),
-    } if state.get("debug_enabled") else {}
-
+    debug_payload: Dict[str, Any] = {}
+    if state.get("debug_enabled"):
+        debug_payload = {
+            "intent": intent,
+            "tool_calls": state.get("planned_tool_calls", []),
+            "retrieval": state.get("retrieval_meta", {"hits": 0}),
+            "trace_id": state.get("trace_id"),
+        }
+    state["out_debug"] = debug_payload
     return state
 
 # Retrieval node uses TF-IDF to find relevant documents

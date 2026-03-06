@@ -3,6 +3,7 @@ from __future__ import annotations
 from langgraph.graph import StateGraph, END
 
 from riskfeed.graph.state import GraphState
+from riskfeed.utils.trace import new_trace_id
 from riskfeed.graph.nodes import (
     session_load_node,
     intent_router_node,
@@ -41,7 +42,7 @@ def build_graph():
     g.add_edge("retrieval", "response_composer")
     g.add_edge("response_composer", "verifier")
 
-    # Conditional routing: if verification_ok then END else repair
+    # Conditional routing: if verification_ok then session_save else repair
     def route_after_verify(state: GraphState) -> str:
         return "end" if state.get("verification_ok") else "repair"
 
@@ -49,12 +50,13 @@ def build_graph():
         "verifier",
         route_after_verify,
         {
-            "end": END,
+            "end": "session_save",
             "repair": "repair",
         },
     )
 
-    g.add_edge("repair", END)
+    g.add_edge("repair", "session_save")
+    g.add_edge("session_save", END)
 
     return g.compile()
 
@@ -70,11 +72,13 @@ def run_chat(
     confirm_action_id: str | None,
     debug_enabled: bool,
 ) -> GraphState:
+    trace_id = new_trace_id()
     state: GraphState = {
         "role": role,
         "message": message,
         "session_id": session_id,
         "confirm_action_id": confirm_action_id,
         "debug_enabled": debug_enabled,
+        "trace_id": trace_id,
     }
     return GRAPH.invoke(state)

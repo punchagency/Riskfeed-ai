@@ -11,11 +11,13 @@ ALLOWED_TOOLS: dict[Role, Set[str]] = {
         "project.create_project_draft",
         "contractor.list_contractors",
         "bidding.send_invite",
+        "debug.crash_tool",
     },
     "contractor": {
         # Contractors should NOT create homeowner projects.
         "contractor.list_contractors",
         "bidding.send_invite",  # (we allow for demo; later you might restrict)
+        "debug.crash_tool",
     },
 }
 
