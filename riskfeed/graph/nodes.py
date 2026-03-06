@@ -12,6 +12,22 @@ from riskfeed.auth.confirmations import create_pending_action, consume
 
 from riskfeed.retrieval.tfidf import RETRIEVER
 
+from riskfeed.graph.session import get_session, make_idempotency_key, get_cached_result, set_cached_result
+
+# Session load node loads session memory into graph state before we do intent routing/planning.
+def session_load_node(state: GraphState) -> GraphState:
+    """
+    This is how the chatbot "remembers" what the user already said.
+    """
+    session_id = state.get("session_id") or "anon_session"
+    state["session_id"] = session_id
+
+    session = get_session(session_id)
+    state["session_memory"] = dict(session.memory)  # copy for safety
+    state["current_project_id"] = session.memory.get("current_project_id")
+
+    return state
+
 
 # Intent router node
 def intent_router_node(state: GraphState) -> GraphState:
@@ -83,9 +99,13 @@ def planner_node(state: GraphState) -> GraphState:
 
     # Project related
     if intent in {"project_intake", "match_contractors"}:
-        location = _extract_location(msg) or ""
+        session_mem = state.get("session_memory", {})
+
+        location = _extract_location(msg) or session_mem.get("location") or ""
         budget = _extract_budget(msg)
-        project_type = "kitchen remodel" if "kitchen" in msg.lower() else "remodel"
+        if budget is None:
+            budget = session_mem.get("budget_usd")
+        project_type = "kitchen remodel" if "kitchen" in msg.lower() else (session_mem.get("project_type") or "remodel")
 
         extracted["project_type"] = project_type
         extracted["location"] = location
@@ -98,12 +118,14 @@ def planner_node(state: GraphState) -> GraphState:
             missing_info.append({"field": "budget_usd", "question": "What is your target budget range (USD)?"})
 
         if not missing_info:
-            planned_tool_calls.append(
-                {
+            existing_project_id = state.get("current_project_id")
+            if existing_project_id:
+                extracted["project_id"] = existing_project_id
+            else:
+                planned_tool_calls.append({
                     "tool_name": "project.create_project_draft",
                     "args": {"project_type": project_type, "location": location, "owner_key": session_id},
-                }
-            )
+                })
 
         if intent == "match_contractors" and not missing_info:
             planned_tool_calls.append({"tool_name": "contractor.list_contractors", "args": {}})
@@ -134,6 +156,8 @@ def planner_node(state: GraphState) -> GraphState:
     state["tool_results"] = []
     return state
 
+
+WRITE_TOOLS = {"project.create_project_draft", "bidding.send_invite"}
 
 # Tool executor node enforces RBAC + confirmation gates
 def tool_executor_node(state: GraphState) -> GraphState:
@@ -190,13 +214,52 @@ def tool_executor_node(state: GraphState) -> GraphState:
             )
             continue
 
+        # Idempotency check
+        session = get_session(session_id)
+
+        idem_key = None
+        if tool_name in WRITE_TOOLS:
+            idem_key = make_idempotency_key(session_id, tool_name, args)
+            cached = get_cached_result(session, idem_key)
+            if cached:
+                results.append(cached)
+                continue
+
+
         tool_fn = get_tool(tool_name)
         out = tool_fn(args)
-        results.append(out)
 
+        # cache the result
+        if idem_key and out.get("ok"):
+            set_cached_result(session, idem_key, out)
+
+        results.append(out)
     state["tool_results"] = results
     return state
 
+# Session saver node saves the session memory
+def session_save_node(state: GraphState) -> GraphState:
+    """
+    Saves useful info back into session memory after we have results.
+    """
+    session_id = state.get("session_id") or "anon_session"
+    session = get_session(session_id)
+
+    extracted = state.get("extracted", {}) or {}
+
+    # Save extracted fields if present
+    for k in ["location", "budget_usd", "project_type"]:
+        if extracted.get(k):
+            session.memory[k] = extracted[k]
+
+    # If tool created a project draft, store it as current_project_id
+    for r in state.get("tool_results", []):
+        if r.get("ok") and r.get("tool_name") == "project.create_project_draft":
+            project_id = r["data"]["project_id"]
+            session.memory["current_project_id"] = project_id
+
+    session.touch()
+    return state
 
 # Response composer node composes the stable API response e.g. RBAC errors, pending confirmations actions
 def response_composer_node(state: GraphState) -> GraphState:
@@ -280,6 +343,10 @@ def response_composer_node(state: GraphState) -> GraphState:
         if r.get("ok") and r.get("tool_name") == "bidding.send_invite":
             lines.append("Invite sent successfully (mock).")
 
+    existing_project_id = state.get("current_project_id")
+    if existing_project_id and not created_project_id:
+        lines.append(f"Project draft already exists: {existing_project_id}")
+    
     if created_project_id:
         lines.append(f"Project draft created: {created_project_id}")
 

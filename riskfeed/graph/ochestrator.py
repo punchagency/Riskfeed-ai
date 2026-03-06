@@ -4,6 +4,7 @@ from langgraph.graph import StateGraph, END
 
 from riskfeed.graph.state import GraphState
 from riskfeed.graph.nodes import (
+    session_load_node,
     intent_router_node,
     planner_node,
     tool_executor_node,
@@ -11,12 +12,15 @@ from riskfeed.graph.nodes import (
     response_composer_node,
     verifier_node,
     repair_node,
+    session_save_node,
 )
 
 
 def build_graph():
     g = StateGraph(GraphState)
 
+    # Core nodes
+    g.add_node("session_load", session_load_node)
     g.add_node("intent_router", intent_router_node)
     g.add_node("planner", planner_node)
     g.add_node("tool_executor", tool_executor_node)
@@ -24,8 +28,13 @@ def build_graph():
     g.add_node("response_composer", response_composer_node)
     g.add_node("verifier", verifier_node)
     g.add_node("repair", repair_node)
+    g.add_node("session_save", session_save_node)
 
-    g.set_entry_point("intent_router")
+    # Entry point: load session first
+    g.set_entry_point("session_load")
+
+    # Intent router
+    g.add_edge("session_load", "intent_router")
     g.add_edge("intent_router", "planner")
     g.add_edge("planner", "tool_executor")
     g.add_edge("tool_executor", "retrieval")

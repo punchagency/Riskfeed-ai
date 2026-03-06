@@ -13,6 +13,10 @@ class GraphState(TypedDict, total=False):
     confirm_action_id: Optional[str]
     debug_enabled: bool
 
+    # session memory
+    session_memory: Dict[str, Any]
+    current_project_id: Optional[str]
+
     # internal routing
     intent: str
 
